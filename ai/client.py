@@ -19,22 +19,21 @@ def model_retired(message):
     return "no longer available" in lowered or ("404" in lowered and "not_found" in lowered)
 
 
-def invalid_argument(message):
+def is_auth_error(message):
     lowered = str(message).lower()
-    if "api_key" in lowered or "api key" in lowered:
-        return False
-    return "invalid_argument" in lowered or "invalid argument" in lowered or "thinking" in lowered
+    return ("api_key" in lowered or "api key" in lowered
+            or "unauthenticated" in lowered or "permission" in lowered)
 
 
-def thinking_config_for(model):
-    name = str(model or "").lower()
-    try:
-        if name.startswith("gemini-2"):
-            return types.ThinkingConfig(thinking_budget=0)
-        if name.startswith("gemini-3"):
-            return types.ThinkingConfig(thinking_level="low")
-    except (TypeError, ValueError):
-        return None
+def is_auth_error(message):
+    lowered = str(message).lower()
+    return ("api_key" in lowered or "api key" in lowered
+            or "unauthenticated" in lowered or "permission" in lowered)
+
+
+def thinking_level_for(model):
+    if str(model or "").lower().startswith("gemini-3"):
+        return "low"
     return None
 
 
@@ -50,27 +49,23 @@ def validate_api_key(api_key):
     if not key:
         return False, "API key is required."
     client = get_client(key, timeout_ms=15000)
-    queue = [(MODEL_DEFAULT, True)]
+    models = [MODEL_DEFAULT]
     last_error = "Key rejected."
-    while queue:
-        model, minimize_thinking = queue.pop(0)
-        kwargs = dict(temperature=0.0, max_output_tokens=16)
-        thinking = thinking_config_for(model) if minimize_thinking else None
-        if thinking is not None:
-            kwargs["thinking_config"] = thinking
+    while models:
+        model = models.pop(0)
         try:
             client.models.generate_content(
                 model=model,
                 contents="Reply with the single word OK.",
-                config=types.GenerateContentConfig(**kwargs),
+                config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=16),
             )
         except Exception as exc:
             message = sanitize_error(exc, key)
             last_error = message
-            if thinking is not None and invalid_argument(message):
-                queue.append((model, False))
-            elif model_retired(message) and model != MODEL_FALLBACK:
-                queue.append((MODEL_FALLBACK, minimize_thinking))
+            if is_auth_error(message):
+                return False, message
+            if model_retired(message) and model != MODEL_FALLBACK:
+                models.append(MODEL_FALLBACK)
             continue
         return True, "Connection verified."
     return False, last_error

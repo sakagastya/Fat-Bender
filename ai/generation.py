@@ -3,8 +3,8 @@ import re
 
 from google.genai import types
 
-from .client import (MODEL_DEFAULT, MODEL_FALLBACK, get_client, invalid_argument,
-                     model_retired, sanitize_error, thinking_config_for)
+from .client import (MODEL_DEFAULT, MODEL_FALLBACK, get_client, is_auth_error,
+                     model_retired, sanitize_error, thinking_level_for)
 
 
 def _strip_fences(text):
@@ -81,19 +81,23 @@ def _extract_json(text):
 def request_json(api_key, *, system, prompt, temperature=0.1,
                  max_output_tokens=2500, timeout_ms=45000):
     client = get_client(api_key, timeout_ms)
-    queue = [(MODEL_DEFAULT, True, max_output_tokens)]
     last_error = "AI request failed."
-    while queue:
-        model, minimize_thinking, budget = queue.pop(0)
+    model = MODEL_DEFAULT
+    budget = max_output_tokens
+    tried_fallback = False
+    tried_thinking = False
+    tried_bare_big = False
+    use_thinking = False
+    while True:
         kwargs = dict(
             system_instruction=system,
             response_mime_type="application/json",
             temperature=temperature,
             max_output_tokens=budget,
         )
-        thinking = thinking_config_for(model) if minimize_thinking else None
-        if thinking is not None:
-            kwargs["thinking_config"] = thinking
+        level = thinking_level_for(model)
+        if use_thinking and level:
+            kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=level)
         try:
             response = client.models.generate_content(
                 model=model,
@@ -102,17 +106,36 @@ def request_json(api_key, *, system, prompt, temperature=0.1,
             )
         except Exception as exc:
             message = sanitize_error(exc, api_key)
-            last_error = message
-            if thinking is not None and invalid_argument(message):
-                queue.append((model, False, budget * 2))
-            elif model_retired(message) and model != MODEL_FALLBACK:
-                queue.append((MODEL_FALLBACK, minimize_thinking, budget))
-            continue
+            if is_auth_error(message):
+                return None, message
+            if model_retired(message) and not tried_fallback:
+                tried_fallback = True
+                use_thinking = False
+                model = MODEL_FALLBACK
+                continue
+            if use_thinking and not tried_bare_big:
+                tried_bare_big = True
+                use_thinking = False
+                budget *= 2
+                continue
+            return None, message
         raw = getattr(response, "text", None)
-        if not raw or not str(raw).strip():
-            return None, "AI returned an empty response. Please try again."
-        data = _extract_json(str(raw))
-        if data is None:
-            return None, "AI response was not parseable JSON. Please try again."
-        return data, None
-    return None, last_error
+        raw = str(raw).strip() if raw else ""
+        if raw:
+            data = _extract_json(raw)
+            if data is not None:
+                return data, None
+            symptom = "AI response was not parseable JSON. Please try again."
+        else:
+            symptom = "AI returned an empty response. Please try again."
+        last_error = symptom
+        if not tried_thinking and level:
+            tried_thinking = True
+            use_thinking = True
+            budget *= 2
+            continue
+        if use_thinking:
+            use_thinking = False
+            budget *= 2
+            continue
+        return None, last_error
