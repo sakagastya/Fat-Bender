@@ -3,7 +3,7 @@ import re
 
 from google.genai import types
 
-from .client import MODEL_DEFAULT, get_client, sanitize_error
+from .client import MODEL_DEFAULT, MODEL_FALLBACK, get_client, model_retired, sanitize_error
 
 
 def _strip_fences(text):
@@ -80,24 +80,38 @@ def _extract_json(text):
 def request_json(api_key, *, system, prompt, temperature=0.1,
                  max_output_tokens=2500, timeout_ms=45000):
     client = get_client(api_key, timeout_ms)
-    try:
-        response = client.models.generate_content(
-            model=MODEL_DEFAULT,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                response_mime_type="application/json",
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-            ),
+    queue = [(MODEL_DEFAULT, True, max_output_tokens)]
+    last_error = "AI request failed."
+    while queue:
+        model, disable_thinking, budget = queue.pop(0)
+        kwargs = dict(
+            system_instruction=system,
+            response_mime_type="application/json",
+            temperature=temperature,
+            max_output_tokens=budget,
         )
-    except Exception as exc:
-        return None, sanitize_error(exc, api_key)
-    raw = getattr(response, "text", None)
-    if not raw or not str(raw).strip():
-        return None, "AI returned an empty response. Please try again."
-    data = _extract_json(str(raw))
-    if data is None:
-        return None, "AI response was not parseable JSON. Please try again."
-    return data, None
+        if disable_thinking:
+            kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(**kwargs),
+            )
+        except Exception as exc:
+            message = sanitize_error(exc, api_key)
+            last_error = message
+            lowered = message.lower()
+            if "thinking" in lowered and disable_thinking:
+                queue.append((model, False, budget * 2))
+            elif model_retired(message) and model != MODEL_FALLBACK:
+                queue.append((MODEL_FALLBACK, disable_thinking, budget))
+            continue
+        raw = getattr(response, "text", None)
+        if not raw or not str(raw).strip():
+            return None, "AI returned an empty response. Please try again."
+        data = _extract_json(str(raw))
+        if data is None:
+            return None, "AI response was not parseable JSON. Please try again."
+        return data, None
+    return None, last_error
