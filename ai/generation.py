@@ -3,7 +3,8 @@ import re
 
 from google.genai import types
 
-from .client import MODEL_DEFAULT, MODEL_FALLBACK, get_client, model_retired, sanitize_error
+from .client import (MODEL_DEFAULT, MODEL_FALLBACK, get_client, invalid_argument,
+                     model_retired, sanitize_error, thinking_config_for)
 
 
 def _strip_fences(text):
@@ -83,15 +84,16 @@ def request_json(api_key, *, system, prompt, temperature=0.1,
     queue = [(MODEL_DEFAULT, True, max_output_tokens)]
     last_error = "AI request failed."
     while queue:
-        model, disable_thinking, budget = queue.pop(0)
+        model, minimize_thinking, budget = queue.pop(0)
         kwargs = dict(
             system_instruction=system,
             response_mime_type="application/json",
             temperature=temperature,
             max_output_tokens=budget,
         )
-        if disable_thinking:
-            kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        thinking = thinking_config_for(model) if minimize_thinking else None
+        if thinking is not None:
+            kwargs["thinking_config"] = thinking
         try:
             response = client.models.generate_content(
                 model=model,
@@ -101,11 +103,10 @@ def request_json(api_key, *, system, prompt, temperature=0.1,
         except Exception as exc:
             message = sanitize_error(exc, api_key)
             last_error = message
-            lowered = message.lower()
-            if "thinking" in lowered and disable_thinking:
+            if thinking is not None and invalid_argument(message):
                 queue.append((model, False, budget * 2))
             elif model_retired(message) and model != MODEL_FALLBACK:
-                queue.append((MODEL_FALLBACK, disable_thinking, budget))
+                queue.append((MODEL_FALLBACK, minimize_thinking, budget))
             continue
         raw = getattr(response, "text", None)
         if not raw or not str(raw).strip():
