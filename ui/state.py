@@ -3,6 +3,7 @@ from datetime import date
 import streamlit as st
 
 STATE_DEFAULTS = {
+    "app_language": "en",
     "user_gemini_key": "",
     "key_verified": False,
     "ob_step": 1,

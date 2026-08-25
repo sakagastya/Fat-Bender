@@ -23,6 +23,18 @@ TEXT_MAIN = "#EAF2FB"
 TEXT_DIM = "#8FA3BF"
 TEXT_SOFT = "#C7D4E8"
 
+DEFAULT_LABELS = {
+    "remaining": "REMAINING KCALS",
+    "needed": "KCALS NEEDED",
+    "cut_in": "Inside deficit window",
+    "cut_over": "Deficit ceiling passed",
+    "bulk_ok": "Surplus locked in",
+    "bulk_low": "Fill the surplus",
+    "protein": "Protein",
+    "carbs": "Carbs",
+    "fat": "Fat",
+}
+
 
 def _ring(radius, color, ratio, glow, width=13):
     circumference = 2 * math.pi * radius
@@ -45,8 +57,10 @@ def _ratio(part, whole):
 
 
 def build_dial(goal_mode, consumed, target, protein, protein_target,
-               carbs, carbs_target, fat, fat_target, maintenance=None):
+               carbs, carbs_target, fat, fat_target, maintenance=None,
+               labels=None):
     palette = PALETTES.get(goal_mode, PALETTES["cut"])
+    L = {**DEFAULT_LABELS, **(labels or {})}
     consumed = max(float(consumed or 0), 0.0)
     target = float(target or 0)
     maintenance = float(maintenance) if maintenance else None
@@ -54,13 +68,13 @@ def build_dial(goal_mode, consumed, target, protein, protein_target,
     if goal_mode == "bulk":
         over_limit = False
         under_floor = maintenance is not None and consumed < maintenance
-        center_label = "KCALS NEEDED"
-        status = "Surplus locked in" if consumed >= target else "Fill the surplus"
+        center_label = L["needed"]
+        status = L["bulk_ok"] if consumed >= target else L["bulk_low"]
     else:
         over_limit = target > 0 and consumed > target
         under_floor = False
-        center_label = "REMAINING KCALS"
-        status = "Deficit ceiling passed" if over_limit else "Inside deficit window"
+        center_label = L["remaining"]
+        status = L["cut_over"] if over_limit else L["cut_in"]
 
     off_plan = over_limit or under_floor
     glow = palette["off_glow"] if off_plan else palette["glow"]
@@ -86,9 +100,9 @@ def build_dial(goal_mode, consumed, target, protein, protein_target,
         )
 
     lines = [
-        target_line("Protein", protein, (protein_target, 196)),
-        target_line("Carbs", carbs, (carbs_target, 215)),
-        target_line("Fat", fat, (fat_target, 234)),
+        target_line(L["protein"], protein, (protein_target, 196)),
+        target_line(L["carbs"], carbs, (carbs_target, 215)),
+        target_line(L["fat"], fat, (fat_target, 234)),
     ]
 
     svg = (

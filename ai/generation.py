@@ -1,20 +1,80 @@
 import json
+import re
 
 from google.genai import types
 
 from .client import MODEL_DEFAULT, get_client, sanitize_error
 
 
-def _extract_json(text):
+def _strip_fences(text):
+    body = text.strip()
+    if body.startswith("```"):
+        body = body.strip("`")
+        if body[:4].lower() == "json":
+            body = body[4:]
+    return body.strip()
+
+
+def _repair_truncated(text):
     start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end <= start:
+    if start == -1:
         return None
-    try:
-        data = json.loads(text[start:end + 1])
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
+    fragment = text[start:]
+    in_string = False
+    escape = False
+    stack = []
+    for ch in fragment:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+    repaired = fragment.rstrip().rstrip(",")
+    if in_string:
+        repaired += '"'
+    changed = True
+    while changed:
+        changed = False
+        stripped = re.sub(r',?\s*"(?:[^"\\]|\\.)*"\s*:\s*$', "", repaired)
+        if stripped != repaired:
+            repaired = stripped.rstrip().rstrip(",")
+            changed = True
+        stripped = re.sub(r',?\s*"(?:[^"\\]|\\.)*"$', "", repaired)
+        if stripped != repaired:
+            repaired = stripped.rstrip().rstrip(",")
+            changed = True
+    repaired += "".join(reversed(stack))
+    return repaired
+
+
+def _extract_json(text):
+    body = _strip_fences(text)
+    candidates = []
+    for source in (text, body):
+        start = source.find("{")
+        end = source.rfind("}")
+        if start != -1 and end > start:
+            candidates.append(source[start:end + 1])
+    repaired = _repair_truncated(body)
+    if repaired:
+        candidates.append(repaired)
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
 
 
 def request_json(api_key, *, system, prompt, temperature=0.1,
@@ -29,14 +89,15 @@ def request_json(api_key, *, system, prompt, temperature=0.1,
                 response_mime_type="application/json",
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
     except Exception as exc:
         return None, sanitize_error(exc, api_key)
     raw = getattr(response, "text", None)
     if not raw or not str(raw).strip():
-        return None, "AI returned an empty response."
+        return None, "AI returned an empty response. Please try again."
     data = _extract_json(str(raw))
     if data is None:
-        return None, "AI response was not parseable JSON."
+        return None, "AI response was not parseable JSON. Please try again."
     return data, None

@@ -64,7 +64,7 @@ def estimate_plan(api_key, age, gender, height_cm, weight_kg,
     prompt = build_planner_prompt(age, gender, height_cm, weight,
                                   activity_description, mode)
     data, error = request_json(key, system=PLANNER_SYSTEM, prompt=prompt,
-                               temperature=0.2, max_output_tokens=400)
+                               temperature=0.2, max_output_tokens=1024)
     if data is None:
         return {"ok": False, "plan": zero_plan(), "error": error}
     try:
